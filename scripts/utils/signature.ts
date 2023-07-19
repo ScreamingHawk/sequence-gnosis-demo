@@ -1,32 +1,22 @@
-import { BigNumber, BigNumberish, ethers } from 'ethers'
-import { ERC1271_ABI, ERC1271_MAGIC_NUMBER } from './ERC1271Abi'
-import type { WalletV2 } from '@0xsequence/wallet'
+import { BigNumberish, BytesLike, ethers } from 'ethers'
+import {
+  ERC1271_ABI,
+  ERC1271_ABI_HASH,
+  ERC1271_MAGIC_NUMBER,
+  ERC1271_MAGIC_NUMBER_HASH,
+} from './ERC1271Abi'
 import Safe from '@safe-global/protocol-kit'
+import { SafeContract } from './gnosis/Safe'
+import type { SequenceWallet } from './sequence/wallet'
 
 // Sequence v2 signing functions
 
 export const signSequenceMessage = async (
-  wallet: WalletV2,
-  message: Uint8Array,
+  wallet: SequenceWallet,
+  message: BytesLike,
+  chainId: BigNumberish,
 ): Promise<string> => {
-  return wallet.signMessage(message)
-}
-
-export const signSequenceERC1271Message = async (
-  validatorAddr: string, // The address of the ERC1271 contract
-  signaturePart: string, // The signature to wrap for ERC1271 validation
-): Promise<string> => {
-  return ethers.utils.solidityPack(
-    ['bytes', 'uint8', 'uint8', 'address', 'uint24', 'bytes'],
-    [
-      [],
-      2, // dynamic sig flag
-      1, // not sure what this is
-      validatorAddr,
-      signaturePart.length,
-      signaturePart,
-    ],
-  )
+  return await wallet.signMessage(message, chainId)
 }
 
 // Gnosis Safe signing functions
@@ -36,14 +26,26 @@ export const EIP712_SAFE_MESSAGE_TYPE = {
   SafeMessage: [{ type: 'bytes', name: 'message' }],
 }
 
+// keccak256("SafeMessage(bytes message)");
+export const SAFE_MSG_TYPEHASH =
+  '0x60b3cbf8b4a223d68d641b3b6ddf9a298e7f33710cf3d3a9d1146b5a6150fbca'
+
 export const signGnosisMessage = async (
   wallet: Safe,
   signer: ethers.Wallet,
-  message: Uint8Array,
+  message: BytesLike,
   chainId: number,
 ): Promise<string> => {
   const digest = ethers.utils.keccak256(message)
-  wallet.signTypedData
+  return signGnosisDigest(wallet, signer, digest, chainId)
+}
+
+export const signGnosisDigest = async (
+  wallet: Safe,
+  signer: ethers.Wallet,
+  digest: BytesLike,
+  chainId: number,
+): Promise<string> => {
   const typedDataSig = {
     signer: signer.address,
     data: await signer._signTypedData(
@@ -51,6 +53,7 @@ export const signGnosisMessage = async (
       EIP712_SAFE_MESSAGE_TYPE,
       { message: digest },
     ),
+    dynamic: false,
   }
   return buildSignatureBytes([typedDataSig])
 }
@@ -58,74 +61,91 @@ export const signGnosisMessage = async (
 // keccak256(
 //     "SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)"
 // )
-const SAFE_TX_TYPEHASH = '0xbb8310d486368db6bd6f849402fdd73ad53d316b5a4b2644ad6efe0f941286d8';
+const SAFE_TX_TYPEHASH =
+  '0xbb8310d486368db6bd6f849402fdd73ad53d316b5a4b2644ad6efe0f941286d8'
 
 // keccak256(
 //     "EIP712Domain(uint256 chainId,address verifyingContract)"
 // );
-const DOMAIN_SEPARATOR_TYPEHASH = '0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218';
+const DOMAIN_SEPARATOR_TYPEHASH =
+  '0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218'
 
 export interface EncodeTransactionDataInput {
-  to: string;
-  value: BigNumberish;
-  data: string;
-  operation: BigNumberish;
-  safeTxGas: BigNumberish;
-  baseGas: BigNumberish;
-  gasPrice: BigNumberish;
-  gasToken: string;
-  refundReceiver: string;
-  nonce: BigNumberish;
-  chainId: number;
+  to: string
+  value: BigNumberish
+  data: string
+  operation: BigNumberish
+  safeTxGas: BigNumberish
+  baseGas: BigNumberish
+  gasPrice: BigNumberish
+  gasToken: string
+  refundReceiver: string
+  nonce: BigNumberish
+  chainId: number
 }
 
-export const encodeGnosisTransaction = (input: EncodeTransactionDataInput, walletAddress: string) => {
-  const { to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, nonce, chainId } = input;
+export const encodeGnosisTransaction = (
+  input: EncodeTransactionDataInput,
+  walletAddress: string,
+) => {
+  const {
+    to,
+    value,
+    data,
+    operation,
+    safeTxGas,
+    baseGas,
+    gasPrice,
+    gasToken,
+    refundReceiver,
+    nonce,
+    chainId,
+  } = input
 
   const safeTxHash = ethers.utils.keccak256(
     ethers.utils.defaultAbiCoder.encode(
-      ["bytes32", "address", "uint256", "bytes32", "uint8", "uint256", "uint256", "uint256", "address", "address", "uint256"],
-      [SAFE_TX_TYPEHASH, to, value, ethers.utils.keccak256(data), operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, nonce]
-    )
-  );
+      [
+        'bytes32',
+        'address',
+        'uint256',
+        'bytes32',
+        'uint8',
+        'uint256',
+        'uint256',
+        'uint256',
+        'address',
+        'address',
+        'uint256',
+      ],
+      [
+        SAFE_TX_TYPEHASH,
+        to,
+        value,
+        ethers.utils.keccak256(data),
+        operation,
+        safeTxGas,
+        baseGas,
+        gasPrice,
+        gasToken,
+        refundReceiver,
+        nonce,
+      ],
+    ),
+  )
 
   const domainSeparator = ethers.utils.keccak256(
-    ethers.utils.defaultAbiCoder.encode(["bytes32", "uint256", "address"], [DOMAIN_SEPARATOR_TYPEHASH, chainId, walletAddress])
-  );
-
-  return ethers.utils.solidityPack(["bytes1", "bytes1", "bytes32"], [0x19, 0x01, domainSeparator]) + safeTxHash.slice(2);
-}
-
-
-
-export const signGnosisERC1271Message = async (
-  wallet: Safe,
-  validatorAddr: string, // The address of the signing ERC1271 contract
-  signer: ethers.Wallet, // The signer of the ERC1271 contract
-  tx: any,
-  chainId: number,
-) => {
-  const safeAddr = await wallet.getAddress()
-  const dataHash = ethers.utils._TypedDataEncoder.encode(
-    { verifyingContract: safeAddr, chainId },
-    EIP712_SAFE_MESSAGE_TYPE,
-    { message: tx },
+    ethers.utils.defaultAbiCoder.encode(
+      ['bytes32', 'uint256', 'address'],
+      [DOMAIN_SEPARATOR_TYPEHASH, chainId, walletAddress],
+    ),
   )
-  const msgHash = ethers.utils._TypedDataEncoder.hash(
-    { verifyingContract: validatorAddr, chainId },
-    EIP712_SAFE_MESSAGE_TYPE,
-    { message: dataHash },
+
+  return (
+    ethers.utils.solidityPack(
+      ['bytes1', 'bytes1', 'bytes32'],
+      [0x19, 0x01, domainSeparator],
+    ) + safeTxHash.slice(2)
   )
-  const typedDataHash = ethers.utils.arrayify(msgHash)
-  const signerAddress = await signer.getAddress()
-  const signerSig = {
-    signer: signerAddress,
-    data: (await signer.signMessage(typedDataHash))
-      .replace(/1b$/, '1f')
-      .replace(/1c$/, '20'),
-    dynamic: true,
-  }
-  return buildSignatureBytes([signerSig])
 }
 
 // https://github.com/safe-global/safe-contracts/blob/7e20a7abd2f6242537eedb2fdd0f2043849babcd/src/utils/execution.ts#L142C49-L142C49
@@ -180,19 +200,56 @@ export const buildSignatureBytes = (signatures: SafeSignature[]): string => {
 
 // Validation
 
-export const validateERC1271Signature = async (
+// isValidSignature(bytes, bytes)
+export const validateERC1271SignatureData = async (
   provider: ethers.providers.JsonRpcProvider,
   contractAddr: string,
-  message: Uint8Array,
+  data: BytesLike,
   signature: string,
 ) => {
-  const digest = ethers.utils.keccak256(message)
-
   const contract = new ethers.Contract(contractAddr, ERC1271_ABI, provider)
   try {
-    const result = await contract.isValidSignature(digest, signature)
-
+    const result = await contract.callStatic.isValidSignature(
+      data,
+      signature,
+    )
     return result === ERC1271_MAGIC_NUMBER
+  } catch (e) {
+    console.error('Unable to validate signature', e)
+    return false
+  }
+}
+
+// isValidSignature(bytes32, bytes)
+export const validateERC1271SignatureHash = async (
+  provider: ethers.providers.JsonRpcProvider,
+  contractAddr: string,
+  hash: BytesLike,
+  signature: string,
+) => {
+  const contract = new ethers.Contract(contractAddr, ERC1271_ABI_HASH, provider)
+  try {
+    const result = await contract.callStatic.isValidSignature(hash, signature)
+    return result === ERC1271_MAGIC_NUMBER_HASH
+  } catch (e) {
+    console.error('Unable to validate signature', e)
+    return false
+  }
+}
+
+export const validateSafeSignature = async (
+  provider: ethers.providers.JsonRpcProvider,
+  contractAddr: string,
+  message: BytesLike,
+  signature: string,
+) => {
+  const hash = ethers.utils.keccak256(message)
+
+  const contract = new SafeContract(contractAddr, provider)
+  try {
+    // Call reverts on error
+    await contract.callStatic.checkSignatures(hash, message, signature)
+    return true
   } catch (e) {
     console.error('Unable to validate signature', e)
     return false

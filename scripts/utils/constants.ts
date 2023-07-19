@@ -1,5 +1,3 @@
-import { v2 } from '@0xsequence/core'
-
 export const V2_WALLET_CONTEXT = {
   version: 2,
   factory: '0xFaA5c0b14d1bED5C888Ca655B9a8A5911F78eF4A',
@@ -9,9 +7,4 @@ export const V2_WALLET_CONTEXT = {
   sequenceUtils: '0xdbbFa3cB3B087B64F4ef5E3D20Dda2488AA244e6',
   walletCreationCode:
     '0x603a600e3d39601a805130553df3363d3d373d3d3d363d30545af43d82803e903d91601857fd5bf3',
-}
-
-export const V2_CODERS = {
-  signature: v2.signature.SignatureCoder,
-  config: v2.config.ConfigCoder,
 }

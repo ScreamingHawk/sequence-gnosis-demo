@@ -1,4 +1,4 @@
-import { Contract, ethers } from 'ethers'
+import { Contract, type ethers } from 'ethers'
 
 const ABI = [
   {

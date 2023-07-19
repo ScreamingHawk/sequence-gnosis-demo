@@ -1,9 +1,20 @@
 import { config as dotenvConfig } from 'dotenv'
-import { ethers } from 'ethers'
+import { ContractTransaction, ethers } from 'ethers'
 import { createAccounts, fundAccounts } from './utils/accounts'
-import { EncodeTransactionDataInput, buildSignatureBytes, encodeGnosisTransaction, signGnosisERC1271Message, signGnosisMessage, signSequenceMessage, validateERC1271Signature } from './utils/signature'
-import { CreateTransactionProps } from '@safe-global/protocol-kit'
-import { SafeContract } from './utils/Safe'
+import {
+  EncodeTransactionDataInput,
+  buildSignatureBytes,
+  encodeGnosisTransaction,
+  signGnosisMessage,
+  signSequenceMessage,
+  validateERC1271SignatureData,
+  validateERC1271SignatureHash,
+  validateSafeSignature,
+} from './utils/signature'
+import { SafeContract } from './utils/gnosis/Safe'
+import { Transaction, applyTxDefault } from './utils/sequence/sequence'
+import { abi as MainModuleABI } from './utils/sequence/MainModuleV2'
+import { V2_WALLET_CONTEXT } from './utils/constants'
 
 dotenvConfig()
 
@@ -30,79 +41,190 @@ const run = async () => {
 
   // Check Sequence owned by EOA
 
-  const seqSig = await signSequenceMessage(accounts.sequenceEoaOwned, msg)
-  if (!await validateERC1271Signature(provider, await accounts.sequenceEoaOwned.getAddress(), msg, seqSig)) {
-    console.error('Signature check failed for sequenceEoaOwned')
+  const seqSig = await signSequenceMessage(
+    accounts.sequenceEoaOwned,
+    msg,
+    chainId,
+  )
+  if (
+    !(await validateERC1271SignatureData(
+      provider,
+      await accounts.sequenceEoaOwned.getAddress(),
+      msg,
+      seqSig,
+    ))
+  ) {
+    console.error('Signature check FAILED for sequenceEoaOwned')
   } else {
     console.log(`Signature check passed for sequenceEoaOwned`)
   }
 
   // Check Gnosis owned by EOA
-  const gnoSig = await signGnosisMessage(accounts.gnosisEoaOwned, accounts.eoa, msg, chainId)
-  if (!await validateERC1271Signature(provider, await accounts.gnosisEoaOwned.getAddress(), msg, gnoSig)) {
-    console.error('Signature check failed for gnosisEoaOwned')
-  } else {
-    console.log(`Signature check passed for gnosisEoaOwned`)
-  }
-
-  /* CHECK the above message encoding */
-
-  
-
-
-  /* SENDING ETHERS */
-
-
-  // Fund the wallet owned wallets
-  await fundAccounts(accounts.eoa, [await accounts.gnosisSequenceOwned.getAddress(), accounts.sequenceGnosisOwned.address], SEND_AMOUNT)
-
-
-  // Send 0.01 from Gnosis owned by Sequence
-  const txParams: EncodeTransactionDataInput = {
-    to: accounts.eoa.address,
-    value: SEND_AMOUNT,
-    data: '0x',
-    operation: 0,
-    safeTxGas: 0,
-    baseGas: 0,
-    gasPrice: 0,
-    gasToken: ethers.constants.AddressZero,
-    refundReceiver: ethers.constants.AddressZero,
-    nonce: await accounts.gnosisSequenceOwned.getNonce(),
+  const gnoSig = await signGnosisMessage(
+    accounts.gnosisEoaOwned,
+    accounts.eoa,
+    msg,
     chainId,
+  )
+  if (
+    !(await validateERC1271SignatureHash(
+      provider,
+      await accounts.gnosisEoaOwned.getAddress(),
+      ethers.utils.keccak256(msg),
+      gnoSig,
+    ))
+  ) {
+    console.error('Signature hash check FAILED for gnosisEoaOwned')
+  } else {
+    console.log(`Signature hash check passed for gnosisEoaOwned`)
   }
 
-  // Encode it
-  const encodedTxData = await encodeGnosisTransaction(txParams, await accounts.gnosisSequenceOwned.getAddress())
-  const encodedTxHash = ethers.utils.keccak256(encodedTxData)
-  console.log(encodedTxHash)
+  //
+  // Gnosis with Sequence as signer
+  //
 
-  // Sign it with the Sequence wallet
-  const encodedTxSeqSigned = await signSequenceMessage(accounts.sequenceGnosisOwned, ethers.utils.toUtf8Bytes(encodedTxHash))
-  const signed = await buildSignatureBytes([{
-    signer: accounts.sequenceEoaOwned.address,
-    data: encodedTxSeqSigned,
-    dynamic: true,
-  }])
+  /* CHECK the above signature can be passed through */
 
-  process.exit(1)
+  const gnoSeqSig = buildSignatureBytes([
+    {
+      signer: accounts.sequenceEoaOwned.address,
+      data: seqSig,
+      dynamic: true,
+    },
+  ])
 
-  // Send it via Contract interface
-  console.log('Sending funds back to eoa')
-  const safe = new SafeContract(await accounts.gnosisSequenceOwned.getAddress(), accounts.eoa);
-  const tx = await safe.execTransaction(txParams, signed)
-  console.log('txhash is', tx.hash)
-  await tx.wait()
-  console.log('sent')
+  if (
+    !(await validateSafeSignature(
+      provider,
+      await accounts.gnosisSequenceOwned.getAddress(),
+      msg,
+      gnoSeqSig,
+    ))
+  ) {
+    console.error('Signature check FAILED for gnosisSequenceOwned')
+  } else {
+    console.log(`Signature check passed for gnosisSequenceOwned`)
+  }
 
-  // Check Sequence owned by Gnosis
-  // const seqSig2 = await signSequenceERC1271Message(await accounts.gnosisEoaOwned.getAddress(), gnoSig)
-  // console.log('seqSig2', seqSig2)
-  // if (!await validateERC1271Signature(provider, accounts.sequenceGnosisOwned.address, msg, seqSig2)) {
-  //   console.error('Signature check failed for sequenceGnosisOwned')
-  // } else {
-  //   console.log(`Signature check passed for sequenceGnosisOwned`)
-  // }
+  //
+  // Sequence with Gnosis as signer
+  //
+
+  /* CHECK the above signature can be passed through */
+
+  // Encode the message in Sequence format for Gnosis signing
+
+  const seqGnoSig = await signSequenceMessage(
+    accounts.sequenceGnosisOwned,
+    msg,
+    chainId,
+  )
+
+  if (
+    !(await validateERC1271SignatureData(
+      provider,
+      await accounts.sequenceGnosisOwned.getAddress(),
+      msg,
+      seqGnoSig,
+    ))
+  ) {
+    console.error('Signature check FAILED for sequenceGnosisOwned')
+  } else {
+    console.log(`Signature check passed for sequenceGnosisOwned`)
+  }
+
+  /* SENDING ETH */
+
+  const testSendEth = async () => {
+    // Fund the wallet owned wallets
+    await fundAccounts(
+      accounts.eoa,
+      [
+        await accounts.gnosisSequenceOwned.getAddress(),
+        accounts.sequenceGnosisOwned.address,
+      ],
+      SEND_AMOUNT,
+    )
+
+    const sendEthFromGnosis = async () => {
+      // Send 0.01 from Gnosis owned by Sequence
+      const txParams: EncodeTransactionDataInput = {
+        to: accounts.eoa.address,
+        value: SEND_AMOUNT,
+        data: '0x',
+        operation: 0,
+        safeTxGas: 0,
+        baseGas: 0,
+        gasPrice: 0,
+        gasToken: ethers.constants.AddressZero,
+        refundReceiver: ethers.constants.AddressZero,
+        nonce: await accounts.gnosisSequenceOwned.getNonce(),
+        chainId,
+      }
+
+      // Encode it
+      const encodedTxData = await encodeGnosisTransaction(
+        txParams,
+        await accounts.gnosisSequenceOwned.getAddress(),
+      )
+
+      // Sign it with the Sequence wallet
+      const encodedTxSeqSigned = await signSequenceMessage(
+        accounts.sequenceEoaOwned,
+        encodedTxData,
+        chainId,
+      )
+      const signed = buildSignatureBytes([
+        {
+          signer: accounts.sequenceEoaOwned.address,
+          data: encodedTxSeqSigned,
+          dynamic: true,
+        },
+      ])
+
+      // Send it via Contract interface
+      console.log('Sending funds back to EOA from Gnosis')
+      const safe = new SafeContract(
+        await accounts.gnosisSequenceOwned.getAddress(),
+        accounts.eoa,
+      )
+      const tx: ContractTransaction = await safe.execTransaction(
+        txParams.to,
+        txParams.value,
+        txParams.data,
+        txParams.operation,
+        txParams.safeTxGas,
+        txParams.baseGas,
+        txParams.gasPrice,
+        txParams.gasToken,
+        txParams.refundReceiver,
+        signed,
+      )
+      await tx.wait()
+      console.log('Funds moved from Gnosis to EOA', tx.hash)
+    }
+    await sendEthFromGnosis()
+
+    const sendEthFromSequence = async () => {
+      // Send 0.01 from Sequence owned by Gnosis
+      const txParams: Transaction = applyTxDefault({
+        target: accounts.eoa.address,
+        value: SEND_AMOUNT,
+      })
+
+      // Get nonce
+      const mainModule = new ethers.Contract(accounts.sequenceGnosisOwned.address, MainModuleABI, accounts.eoa)
+      const nonce = await mainModule.readNonce(0)
+
+      // Relay it
+      const sig = await accounts.sequenceGnosisOwned.signTransactions([txParams], nonce, chainId)
+      const tx = await mainModule.execute([txParams], nonce, sig)
+      await tx.wait()
+      console.log('Funds moved from Sequence to EOA', tx.hash)
+    }
+    await sendEthFromSequence()
+  }
+  // await testSendEth()
 }
 
 run()

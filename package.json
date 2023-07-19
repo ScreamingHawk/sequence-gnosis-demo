@@ -8,10 +8,6 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
-    "0xsequence": "0.0.0-20230706234338",
-    "@0xsequence/relayer": "0.0.0-20230706234338",
-    "@0xsequence/wallet": "0.0.0-20230706234338",
-    "@0xsequence/wallet-contracts": "2.0.0",
     "@safe-global/protocol-kit": "^1.0.1",
     "@safe-global/safe-apps-sdk": "^8.0.0",
     "dotenv": "^16.3.1",

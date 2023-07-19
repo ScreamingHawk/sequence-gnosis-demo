@@ -1,38 +1,25 @@
-import { LocalRelayer } from '@0xsequence/relayer'
-import { Orchestrator, signers as hubsigners } from '@0xsequence/signhub'
-import { Wallet, type WalletV2 } from '@0xsequence/wallet'
 import Safe, { EthersAdapter, SafeFactory } from '@safe-global/protocol-kit'
 import type { EthAdapter } from '@safe-global/safe-core-sdk-types'
 import { BigNumber, ethers } from 'ethers'
-import { GnosisSigner } from './GnosisSigner'
-import { V2_CODERS, V2_WALLET_CONTEXT } from './constants'
+import { V2_WALLET_CONTEXT } from './constants'
+import { GnosisWallet } from './gnosis/GnosisSigner'
+import { SequenceWallet } from './sequence/wallet'
+import { abi as FactoryABI } from './sequence/FactoryV2'
 
 const deploySequence = async (
-  relayer: LocalRelayer,
-  provider: ethers.providers.Provider,
-  owner: ethers.Signer,
+  signer: ethers.Signer,
+  owner: ethers.Wallet | GnosisWallet,
   ownerName: string,
-  chainId: number,
 ) => {
   console.log(`Creating Sequence owned by ${ownerName}`)
-  const sequenceWallet = Wallet.newWallet({
-    coders: V2_CODERS,
-    context: V2_WALLET_CONTEXT,
-    config: V2_CODERS.config.fromSimple({
-      threshold: 1,
-      checkpoint: 0,
-      signers: [{ address: await owner.getAddress(), weight: 1 }],
-    }),
-    orchestrator: new Orchestrator([new hubsigners.SignerWrapper(owner)]),
-    chainId,
-    provider,
-    relayer,
-  }) as WalletV2
+  const sequenceWallet = SequenceWallet.detailedWallet(V2_WALLET_CONTEXT, { threshold: 1, signers: [{weight: 1, value: owner}] })
 
-  const sequenceAddress = await sequenceWallet.getAddress()
-  console.log(`Sequence owned by ${ownerName} Address: ${sequenceAddress}`)
-  if (!(await sequenceWallet.reader().isDeployed(sequenceAddress))) {
-    const tx = await sequenceWallet.deploy()
+  console.log(`Sequence owned by ${ownerName} Address: ${sequenceWallet.address}`)
+  if (signer.provider && await signer.provider.getCode(sequenceWallet.address) === '0x') {
+    // Create factory
+    console.log(`Deploying Sequence owned by ${ownerName}`)
+    const factory = new ethers.Contract(V2_WALLET_CONTEXT.factory, FactoryABI, signer)
+    const tx = await factory.deploy(V2_WALLET_CONTEXT.mainModule, sequenceWallet.imageHash)
     await tx.wait()
   }
 
@@ -80,16 +67,11 @@ export const createAccounts = async (
   console.log(`EOA Address: ${eoaAddress}`)
   console.log(`EOA funds: ${await eoa.getBalance()}`)
 
-  // Create your rpc relayer instance with relayer node you want to use
-  const relayer = new LocalRelayer(eoa)
-
   // Create Sequence owned by EOA
   const sequenceEoaOwned = await deploySequence(
-    relayer,
-    provider,
+    eoa,
     eoa,
     'EOA',
-    chainId,
   )
 
   // Create Gnosis owned by EOA
@@ -105,16 +87,14 @@ export const createAccounts = async (
     'EOA',
   )
 
-  // Hack Gnosis type into ethers.Singer
-  const gnosisEoaOwnedSigner = new GnosisSigner(gnosisEoaOwned)
+  // Hack Safe into type usable by Sequence Wallet
+  const gnosisEoaOwnedSigner = new GnosisWallet(gnosisEoaOwned, await gnosisEoaOwned.getAddress(), eoa, chainId)
 
   // Create Sequence owned by Gnosis
   const sequenceGnosisOwned = await deploySequence(
-    relayer,
-    provider,
+    eoa,
     gnosisEoaOwnedSigner,
     'Gnosis',
-    chainId,
   )
 
   // Create Gnosis owned by Sequence
@@ -149,7 +129,7 @@ export const fundAccounts = async (
   // Link EOA
   const eoaAddress = await eoa.getAddress()
   console.log(`EOA Address: ${eoaAddress}`)
-  console.log(`EOA funds: ${await eoa.getBalance()}`)
+  console.log(`EOA funds: ${ethers.utils.formatEther(await eoa.getBalance())}`)
 
   // Send ETH to each address
   const txs = []
